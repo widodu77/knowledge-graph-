@@ -1,0 +1,159 @@
+## E-Commerce Knowledge Graph (Docker)
+
+A small example stack that loads relational e‑commerce data from PostgreSQL into a Neo4j knowledge graph, and exposes a FastAPI service to trigger ETL and check health. This repository demonstrates a simple graph-shaped product/customer/order model and includes tooling to run the full stack with Docker Compose.
+
+## Contents
+- `docker-compose.yml` — Compose stack (FastAPI app, Postgres, Neo4j, etc.).
+- `app/`
+	- `dockerfile` — Docker image for the FastAPI app.
+	- `main.py` — FastAPI application exposing `/health`, `/etl/run`, and `/`.
+	- `etl.py` — ETL script migrating data from Postgres into Neo4j and building graph relationships.
+	- `queries.cypher` — (Used by `etl.py`) Cypher statements to create constraints/indexes / schema in Neo4j.
+	- `requirements.txt` — Python dependencies for the app.
+	- `start.sh` — App start script used by the container (assumed to run Uvicorn; see "Assumptions" below).
+- `postgres/`
+	- `01_schema.sql` — PostgreSQL schema for customers, categories, products, orders, order_items and events.
+	- `02_seed.sql` — (Optional) seed data file if provided.
+- `scripts/`
+	- `check_containers.sh` — End-to-end validation script that hits the FastAPI, queries Postgres, runs ETL, etc.
+- `sql/` — (project SQL helpers, if any)
+- `readme` — this file (project README)
+
+## Quick project summary
+This project extracts e-commerce relational data from PostgreSQL and loads it into Neo4j as a graph:
+- Category nodes and `IN_CATEGORY` relationships to products.
+- Product nodes with `price` and category relationships.
+- Customer nodes with `join_date`.
+- Order nodes connected to customers (`PLACED`) and products (`CONTAINS` with `quantity`).
+- Behavioral `events` (VIEWED, CLICKED, ADDED_TO_CART) as relationships between customers and products.
+
+An HTTP API (FastAPI) exposes:
+- `GET /health` — health check.
+- `POST /etl/run` — trigger the ETL (runs the `etl()` function from `etl.py`).
+
+## Assumptions
+- `start.sh` launches the FastAPI server (e.g., `uvicorn main:app --host 0.0.0.0 --port 8000`). If it differs, update run instructions accordingly.
+- The `docker-compose.yml` orchestrates at least `app`, `postgres`, and `neo4j` services and wires network/volumes. If you customized service names, adapt commands below.
+- Default Postgres credentials used in `etl.py` are: host `postgres`, database `shop`, user `app`, password `app`. Neo4j defaults are `bolt://neo4j:7687`, user `neo4j`, password `password` (override via env vars `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD`).
+
+## How to run (development / quick start)
+These are the typical steps to run the whole stack using Docker Compose. The examples below assume you have Docker and Docker Compose installed.
+
+Open PowerShell in the project directory (where `docker-compose.yml` lives), then:
+
+Start the stack:
+```powershell
+# Build and start in background
+docker compose up --build -d
+```
+
+Check the FastAPI health endpoint (wait a few seconds for containers to initialize):
+```powershell
+curl http://localhost:8000/health
+```
+
+Trigger the ETL via HTTP:
+```powershell
+# Trigger ETL from the host
+curl -X POST http://localhost:8000/etl/run
+```
+
+Or run ETL from inside the `app` container (used in `scripts/check_containers.sh`):
+```powershell
+docker compose exec -T app python /work/app/etl.py
+```
+
+Run the included end-to-end check script (Linux / WSL or from inside a container). The script is Bash (`scripts/check_containers.sh`), so run it from WSL or inside a suitable container:
+```bash
+# From WSL or a Linux container shell
+./scripts/check_containers.sh
+```
+
+Stop and remove containers:
+```powershell
+docker compose down
+```
+
+## Environment variables
+- NEO4J_URI — Neo4j bolt URI (default: `bolt://neo4j:7687`)
+- NEO4J_USER — Neo4j username (default: `neo4j`)
+- NEO4J_PASSWORD — Neo4j password (default: `password`)
+
+If you run outside Docker or with different credentials, update these env vars or the `docker-compose.yml` service configuration.
+
+## What the ETL (`app/etl.py`) does
+1. Waits for Postgres to be reachable (uses psycopg2).
+2. Waits for Neo4j to be reachable (uses `neo4j` Python driver).
+3. Clears Neo4j (development behavior: `MATCH (n) DETACH DELETE n`).
+4. Loads schema/constraints from `app/queries.cypher` if present.
+5. Reads `categories`, `products`, `customers`, `orders`, `order_items`, and `events` from Postgres using `pandas.read_sql`.
+6. Creates nodes and relationships in Neo4j:
+	 - `Category`, `Product`, `Customer`, `Order` nodes.
+	 - Relationships: `IN_CATEGORY`, `PLACED`, `CONTAINS` (with `quantity`), and event relationships like `VIEWED`, `CLICKED`, `ADDED_TO_CART` with event metadata.
+7. Prints counts of nodes and relationships as final verification.
+
+Design notes:
+- The ETL uses `MERGE` for idempotency on nodes.
+- Events map to relationship types via an `event_type_map`.
+- Date/time are converted to Neo4j `date`/`datetime` using ISO strings.
+
+## Files of interest
+- `app/etl.py` — main ETL implementation.
+- `app/main.py` — FastAPI app (endpoints & integration to trigger ETL).
+- `postgres/01_schema.sql` — schema definition run when initializing Postgres.
+- `scripts/check_containers.sh` — convenience script for validation and end-to-end checks.
+
+## Troubleshooting
+- Postgres connection errors:
+	- Ensure the Postgres container is up (`docker compose ps`).
+	- Confirm DB user and password match `etl.py` credentials or adjust them.
+	- If running Postgres outside Docker, update `get_postgres_connection()` in `etl.py` accordingly.
+- Neo4j auth or connection errors:
+	- Verify `NEO4J_USER` and `NEO4J_PASSWORD`.
+	- Confirm Neo4j bolt port is reachable and the `NEO4J_URI` is correct.
+- FastAPI not reachable:
+	- Check container logs: `docker compose logs app` or `docker compose logs --follow app`.
+	- Ensure `start.sh` grants correct host and port binding (should listen on `0.0.0.0:8000`).
+- `scripts/check_containers.sh` is Bash. On Windows run in WSL or execute its logic piecewise in PowerShell (the script does `curl`, `psql`, and runs ETL inside containers).
+
+## Development notes
+- The app Dockerfile uses Python 3.11-slim and installs the dependencies from `app/requirements.txt`.
+- The app copies the complete `app/` folder into the image at `/work/app` and sets the command to execute `./start.sh`. If you prefer direct Uvicorn runs for development, you can run:
+```powershell
+# Run locally (requires installed dependencies)
+python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+```
+- The ETL uses `pandas.read_sql` which relies on psycopg2. Ensure dependencies in `requirements.txt` include `pandas`, `psycopg2-binary` (or `psycopg2`), `neo4j`, `fastapi`, `uvicorn`.
+
+## Suggested improvements / next steps
+- Add tests: small unit tests for the ETL transformation functions and an integration test that runs the ETL against test containers.
+- Convert the ETL into idempotent upserts with batching to scale to large datasets (currently iterates row-by-row).
+- Add config management (env-based config file or `pydantic` settings).
+- Provide better logging and metrics (e.g., counts for inserted/merged nodes, durations).
+- Add a `README.md` file to repository root (I can add it for you on request).
+
+## Example usage
+1. Build & up the stack:
+```powershell
+docker compose up --build -d
+```
+2. Confirm API:
+```powershell
+curl http://localhost:8000/health
+```
+3. Trigger ETL:
+```powershell
+curl -X POST http://localhost:8000/etl/run
+```
+4. Inspect Neo4j browser (if exposed) or query with Cypher clients.
+
+## License & Attribution
+Add your preferred license. If none is present, consider an OSI-approved license like MIT for demos/learning projects.
+
+---
+
+If you'd like, I can:
+- Save this content to `README.md` in the repo now.
+- Tweak the text to match exact `start.sh` contents (I can read it and adapt the README).
+- Add a short example `curl` or Python snippet to query Neo4j once ETL runs.
+
