@@ -152,8 +152,3 @@ Add your preferred license. If none is present, consider an OSI-approved license
 
 ---
 
-If you'd like, I can:
-- Save this content to `README.md` in the repo now.
-- Tweak the text to match exact `start.sh` contents (I can read it and adapt the README).
-- Add a short example `curl` or Python snippet to query Neo4j once ETL runs.
-
