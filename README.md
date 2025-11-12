@@ -108,14 +108,13 @@ WHERE type(e) IN ['VIEWED', 'CLICKED', 'ADDED_TO_CART']
 RETURN c.name, type(e) AS action, p.name
 LIMIT 10
 ```
-![Query Results](screenshots/query3.png)
+![Query Results](Screenshot44.png)
 
-### Health Check
+### Collab Check
 ```bash
 $ curl http://localhost:8000/recs/collaborative/C1
-{"ok": true}
 ```
-![Collab check](Screenshot4.png)
+![Collab check](Screenshot5.png)
 
 ## Recommendation Strategies
 
